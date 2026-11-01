@@ -1381,6 +1381,47 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def resend_bounced_to(
+        self, outbox_id: str, new_email: str, status: str, approved_by: str = "",
+    ) -> str | None:
+        """A sequence email bounced and a working address was found: queue
+        the same email to it, and point the person's queued follow-ups there.
+
+        The bounced row keeps its history as kind 'bounced', which frees its
+        (campaign, prospect, step) slot for the resend. Follow-ups still wait
+        for the resend to go out (they follow the latest 'sequence' row).
+        Returns the new outbox id, or None when the bounced row isn't found.
+        """
+        now = _utcnow().isoformat()
+        new_id = _new_id()
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM outbox WHERE id = ?", (outbox_id,)) as cursor:
+                row = await cursor.fetchone()
+            if row is None or row["kind"] != "sequence":
+                return None
+            await db.execute(
+                "UPDATE outbox SET kind = 'bounced', error = 'bounced', updated_at = ? "
+                "WHERE id = ?", (now, outbox_id),
+            )
+            await db.execute(
+                """INSERT INTO outbox
+                   (id, campaign_id, prospect_id, conversation_id, step, kind,
+                    to_email, subject, body, status, send_at, provider, approved_by)
+                   VALUES (?, ?, ?, ?, ?, 'sequence', ?, ?, ?, ?, ?, ?, ?)""",
+                (new_id, row["campaign_id"], row["prospect_id"], row["conversation_id"],
+                 row["step"], _norm(new_email), row["subject"], row["body"],
+                 status, now, row["provider"], approved_by),
+            )
+            await db.execute(
+                "UPDATE outbox SET to_email = ?, updated_at = ? "
+                "WHERE prospect_id = ? AND id != ? "
+                "AND status IN ('pending_review', 'approved')",
+                (_norm(new_email), now, row["prospect_id"], new_id),
+            )
+            await db.commit()
+        return new_id
+
     async def stop_company(self, prospect_id: str) -> int:
         """Someone replied: mark their company as answered and cancel the
         sequence emails queued for everyone else there. Replies Harvey owes

@@ -17,6 +17,11 @@ minor versions can still change behaviour.
   default $0.05) and per month (`TREG_MONTHLY_BUDGET`, default $10). Every
   call is tagged with the company and teammate it's for, and `harvey treg`
   shows spend against the caps and treg's per-customer ledger.
+- **Bounce recovery through treg.** When a cold email bounces and treg is on,
+  Harvey asks treg once for the person's verified address at the same
+  company and queues the same email to it (approval, caps and the pre-send
+  gate still apply), moving their follow-ups to the new address. Otherwise
+  the bounce is handled as before.
 - **`harvey export --drafts`**: deliverable prospects with their three
   drafted emails filled in, one row each (`drafts.csv`), for teams that
   build lists with Harvey and send from their own mailbox.

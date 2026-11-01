@@ -540,3 +540,113 @@ async def test_actions_are_indexed_by_type(state):
                               "AND tbl_name = 'actions'") as cursor:
             names = {r[0] for r in await cursor.fetchall()}
     assert "idx_actions_type_created" in names
+
+
+# ── bounce recovery through treg ──
+
+
+async def _bounced_send(state, pid, campaign_id="c1"):
+    """A sent step 1 that bounces, plus a queued step 2 for the same person."""
+    item = await state.add_outbox_item(
+        prospect_id=pid, to_email="jane@acme.com", subject="A question", body="Hi Jane.",
+        send_at=_now_iso(), status="approved", campaign_id=campaign_id, step=1,
+    )
+    await state.update_outbox_item(item, status="sent", message_id="<m1@x>", sent_at=_now_iso())
+    follow = await state.add_outbox_item(
+        prospect_id=pid, to_email="jane@acme.com", subject="Follow", body="Again.",
+        send_at=_now_iso(), status="pending_review", campaign_id=campaign_id, step=2,
+    )
+    return item, follow
+
+
+def _bounce_message():
+    return InboundMessage(
+        provider_id="b1", from_email="mailer-daemon@googlemail.com",
+        subject="Delivery Status Notification (Failure)",
+        body="couldn't be delivered", in_reply_to="<m1@x>", is_bounce=True,
+    )
+
+
+@pytest.fixture
+def treg_finds(monkeypatch):
+    """treg on, answering a lookup with whatever the test sets."""
+    from harvey.integrations import treg
+
+    monkeypatch.setenv("TREG_TOKEN", "tok_test")
+    calls = []
+    answer = {"value": ("j.doe@acme.com", {"status": "valid", "catch_all": False})}
+
+    async def find(first, last, domain, state):
+        calls.append((first, last, domain))
+        return answer["value"]
+
+    monkeypatch.setattr(treg, "treg_find", find)
+    return calls, answer
+
+
+@pytest.mark.asyncio
+async def test_bounce_is_resent_to_the_address_treg_finds(state, treg_finds):
+    calls, _ = treg_finds
+    pid = await seed_prospect(state, status="contacted")
+    bounced, follow = await _bounced_send(state, pid)
+
+    provider = FakeProvider()
+    provider.inbound = [_bounce_message()]
+    await make_handler(state, provider)._run_native()
+
+    assert calls == [("Jane", "Doe", "acme.com")]
+    prospect = await state.get_prospect(pid)
+    assert (prospect.email, prospect.email_status) == ("j.doe@acme.com", "verified")
+    rows = {r["id"]: r for r in await state.get_outbox(limit=50)}
+    assert rows[bounced]["kind"] == "bounced"
+    resend = [r for r in rows.values() if r["step"] == 1 and r["kind"] == "sequence"]
+    assert len(resend) == 1
+    assert (resend[0]["to_email"], resend[0]["subject"], resend[0]["body"], resend[0]["status"]) == \
+        ("j.doe@acme.com", "A question", "Hi Jane.", "pending_review")
+    # the follow-up now goes to the new address, still waiting for approval
+    assert (rows[follow]["to_email"], rows[follow]["status"]) == ("j.doe@acme.com", "pending_review")
+
+
+@pytest.mark.asyncio
+async def test_bounce_recovery_happens_once_per_person(state, treg_finds):
+    calls, _ = treg_finds
+    pid = await seed_prospect(state, status="contacted")
+    await _bounced_send(state, pid)
+    await state.set_setting("treg_bounce_recovery:" + pid, "jane@acme.com")
+
+    provider = FakeProvider()
+    provider.inbound = [_bounce_message()]
+    await make_handler(state, provider)._run_native()
+
+    assert calls == []
+    assert (await state.get_prospect(pid)).email_status == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_unverified_treg_hit_is_not_resent(state, treg_finds):
+    _, answer = treg_finds
+    answer["value"] = ("j.doe@acme.com", None)  # found but not verified
+    pid = await seed_prospect(state, status="contacted")
+    _, follow = await _bounced_send(state, pid)
+
+    provider = FakeProvider()
+    provider.inbound = [_bounce_message()]
+    await make_handler(state, provider)._run_native()
+
+    assert (await state.get_prospect(pid)).email_status == "invalid"
+    rows = {r["id"]: r for r in await state.get_outbox(limit=50)}
+    assert rows[follow]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_without_treg_a_bounce_still_just_stops(state):
+    pid = await seed_prospect(state, status="contacted")
+    _, follow = await _bounced_send(state, pid)
+
+    provider = FakeProvider()
+    provider.inbound = [_bounce_message()]
+    await make_handler(state, provider)._run_native()
+
+    assert (await state.get_prospect(pid)).email_status == "invalid"
+    rows = {r["id"]: r for r in await state.get_outbox(limit=50)}
+    assert rows[follow]["status"] == "cancelled"

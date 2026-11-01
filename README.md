@@ -691,6 +691,16 @@ A treg hit at a different domain (usually a former employer) is thrown away.
 treg's answers are tagged `verified` / `risky` / `guess` like every other address,
 so only deliverable ones are drafted for or sent to.
 
+**When a sent email bounces**, Harvey asks treg once for that person's real
+address at the same company. If treg returns a verified one, Harvey queues the
+**same email** to it and points that person's remaining follow-ups there; the
+bounced address is kept in the history. The resend is an ordinary cold email:
+it waits for your approval (unless you're on autopilot), counts toward the daily
+limit and passes the same pre-send checks. If treg finds nothing verified, or this
+person already bounced once, Harvey does what it always did: marks the address
+invalid and cancels their queued emails. Every bounce still counts toward the
+bounce-rate kill switch.
+
 ### Watching what it costs
 
 ```bash

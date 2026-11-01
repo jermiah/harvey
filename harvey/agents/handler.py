@@ -19,6 +19,8 @@ from harvey.config import (
 )
 from harvey.gate import autopilot_review, do_not_contact_match, pre_send_check
 from harvey.humanize import humanize, humanizer_enabled
+from harvey.integrations import treg
+from harvey.integrations.email_finder import _status_from_verdict
 from harvey.integrations.instantly import InstantlyClient
 from harvey.integrations.mail_provider import (
     NATIVE_PROVIDERS, get_mail_provider, strip_quoted_reply,
@@ -33,6 +35,8 @@ logger = logging.getLogger("harvey.handler")
 
 KILL_SWITCH_KEY = "sending_paused"
 BOUNCE_COUNT_KEY = "bounce_count"
+# One treg recovery per person: a second bounce means stop, not keep paying.
+BOUNCE_RECOVERY_KEY = "treg_bounce_recovery:"
 # Kill switch only engages after this many sends (a tiny sample lies).
 MIN_SENDS_FOR_KILL_SWITCH = 10
 
@@ -956,7 +960,8 @@ class Handler:
         if outbox_item:
             prospect = await self.state.get_prospect(outbox_item["prospect_id"])
 
-        if prospect:
+        recovered = bool(prospect) and await self._recover_bounce(prospect, outbox_item)
+        if prospect and not recovered:
             await self.state.update_prospect_email(
                 prospect.id, prospect.email, "invalid"
             )
@@ -967,7 +972,7 @@ class Handler:
                 f"Handler: BOUNCE for {prospect.email} — marked invalid, "
                 f"cancelled {cancelled} queued email(s)."
             )
-        else:
+        elif not prospect:
             logger.warning(
                 f"Handler: bounce received ({msg.subject[:60]}) but couldn't "
                 "match it to a sent email."
@@ -994,6 +999,55 @@ class Handler:
             )
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
+
+    async def _recover_bounce(self, prospect, outbox_item) -> bool:
+        """A cold email bounced: ask treg for the person's real address and
+        queue the same email to it. Once per person, only for sequence mail,
+        only when treg returns a deliverable address at the same company.
+        The resend goes through the outbox like any cold email (approval,
+        caps, pre-send gate). Returns True when a resend was queued."""
+        if not outbox_item or outbox_item.get("kind") != "sequence":
+            return False
+        key = BOUNCE_RECOVERY_KEY + prospect.id
+        if await self.state.get_setting(key) or not await treg.treg_available(self.state):
+            return False
+        old = (prospect.email or "").strip().lower()
+        domain = old.partition("@")[2]
+        if not (prospect.first_name and prospect.last_name and domain):
+            return False
+        await self.state.set_setting(key, old)
+
+        found = await treg.treg_find(prospect.first_name, prospect.last_name, domain, self.state)
+        if not found:
+            return False
+        new, verdict = found
+        status = _status_from_verdict(verdict) if verdict else None
+        allow_risky = getattr(self.config.channels.email, "send_to_risky", False)
+        if new == old or status not in (("verified", "risky") if allow_risky else ("verified",)):
+            return False
+        try:
+            await self.state.update_prospect_email(prospect.id, new, status)
+        except Exception as e:
+            # Another prospect already has this address.
+            logger.info(f"Handler: treg found {new} for a bounced address, but it's taken ({e}).")
+            return False
+
+        await sync_sending_mode(self.config, self.state)
+        approved = not getattr(self.config.channels.email, "require_approval", True)
+        resent = await self.state.resend_bounced_to(
+            outbox_item["id"], new, "approved" if approved else "pending_review",
+            approved_by="autopilot" if approved else "",
+        )
+        if not resent:
+            return False
+        logger.warning(f"Handler: BOUNCE for {old} — treg found {new} [{status}]; "
+                       "the same email is queued to it.")
+        await self.state.log_action(
+            action_type="bounce_recovered", agent="handler",
+            details={"prospect_id": prospect.id, "old": old, "new": new,
+                     "status": status, "outbox_id": resent},
+        )
+        return True
 
     async def _queue_native_reply(
         self, response: str, prospect, convo, reply_meta: dict, intent: str
