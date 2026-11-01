@@ -691,15 +691,39 @@ A treg hit at a different domain (usually a former employer) is thrown away.
 treg's answers are tagged `verified` / `risky` / `guess` like every other address,
 so only deliverable ones are drafted for or sent to.
 
-**When a sent email bounces**, Harvey asks treg once for that person's real
-address at the same company. If treg returns a verified one, Harvey queues the
-**same email** to it and points that person's remaining follow-ups there; the
-bounced address is kept in the history. The resend is an ordinary cold email:
-it waits for your approval (unless you're on autopilot), counts toward the daily
-limit and passes the same pre-send checks. If treg finds nothing verified, or this
-person already bounced once, Harvey does what it always did: marks the address
-invalid and cancels their queued emails. Every bounce still counts toward the
-bounce-rate kill switch.
+### When a sent email bounces
+
+treg is used a second time, after sending: when an email Harvey sent comes back
+undelivered (a bounce), Harvey uses treg to find the right address and sends the
+same email again.
+
+```
+email sent → bounces
+  └─ Harvey asks treg for this person's address at the same company
+       ├─ treg finds a verified one → the SAME email is queued to the new address,
+       │                              and the person's follow-ups move there too
+       └─ nothing verified found    → the old address is marked invalid and
+                                      the person's queued emails are cancelled
+```
+
+The rules that keep this safe:
+
+- **One retry per person.** If the new address bounces as well, Harvey stops
+  there instead of paying treg again.
+- **Verified and same company only.** A guess, a catch-all (unless
+  `send_to_risky` is on) or an address at another company is never used.
+- **The resend is an ordinary cold email.** It waits in the Outbox for your
+  approval (unless you're on autopilot), counts toward the daily limit and
+  passes the same pre-send checks as any email.
+- **Every bounce still counts** toward the bounce-rate kill switch, recovered or
+  not, so a bad list still pauses sending.
+- The bounced address stays in the history (Outbox, Activity: `bounce_recovered`).
+
+**This needs Harvey to do the sending.** Harvey can only see a bounce in the
+mailbox it sends from (Gmail, Microsoft 365 or SMTP, set up in `.env`). If you use
+it list-only (`channels.email.enabled: false`) and send the drafts from your own
+mailbox, Harvey never sees those bounces: re-check a bounced address yourself, or
+let Harvey send.
 
 ### Watching what it costs
 
