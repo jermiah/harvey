@@ -575,24 +575,7 @@ class Sender:
 
     def _render(self, text: str, prospect) -> str:
         """Fill merge variables. The pre-send gate rejects any leftovers."""
-        replacements = {
-            # A company inbox has no name; "there" keeps "Hi {{first_name}}," readable.
-            "first_name": prospect.first_name or ("there" if prospect.is_company_inbox else ""),
-            "last_name": prospect.last_name,
-            "company": prospect.company,
-            "title": prospect.title,
-            "personalization": prospect.personalization_notes,
-        }
-        # "{{company}}'s" for "Parkes Builders" should read "Builders'".
-        company = prospect.company or ""
-        if company.endswith(("s", "S")):
-            for tag in ("{{company}}", "{{ company }}"):
-                text = text.replace(tag + "'s", company + "'")
-                text = text.replace(tag + "’s", company + "’")
-        for key, value in replacements.items():
-            text = text.replace("{{" + key + "}}", value or "")
-            text = text.replace("{{ " + key + " }}", value or "")
-        return text.strip()
+        return render_merge_vars(text, prospect)
 
     async def _stage_campaign_native(self, campaign):
         """Render + schedule a draft campaign's emails into the outbox."""
@@ -1116,3 +1099,25 @@ class Sender:
         if sent:
             logger.info(f"Sender: {sent} email(s) sent this cycle "
                         f"({sent_today + sent}/{max_daily} today).")
+
+
+def render_merge_vars(text: str, prospect) -> str:
+    """Fill a template's merge variables for one prospect."""
+    replacements = {
+        # A company inbox has no name; "there" keeps "Hi {{first_name}}," readable.
+        "first_name": prospect.first_name or ("there" if prospect.is_company_inbox else ""),
+        "last_name": prospect.last_name,
+        "company": prospect.company,
+        "title": prospect.title,
+        "personalization": prospect.personalization_notes,
+    }
+    # "{{company}}'s" for "Parkes Builders" should read "Builders'".
+    company = prospect.company or ""
+    if company.endswith(("s", "S")):
+        for tag in ("{{company}}", "{{ company }}"):
+            text = text.replace(tag + "'s", company + "'")
+            text = text.replace(tag + "’s", company + "’")
+    for key, value in replacements.items():
+        text = text.replace("{{" + key + "}}", value or "")
+        text = text.replace("{{ " + key + " }}", value or "")
+    return text.strip()

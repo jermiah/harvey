@@ -9,6 +9,18 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **treg for email finding and verification** (`TREG_TOKEN`, optional). When
+  the free pattern pipeline leaves an address unverified, Harvey grades it
+  with treg's routed verifier and, if it's still a guess or invalid, looks
+  the person up by name and domain with treg's routed finder. Hits on
+  another domain are discarded. Capped per call (`TREG_MAX_COST_PER_LOOKUP`,
+  default $0.05) and per month (`TREG_MONTHLY_BUDGET`, default $10). Every
+  call is tagged with the company and teammate it's for, and `harvey treg`
+  shows spend against the caps and treg's per-customer ledger.
+- **`harvey export --drafts`**: deliverable prospects with their three
+  drafted emails filled in, one row each (`drafts.csv`), for teams that
+  build lists with Harvey and send from their own mailbox.
+
 - **Your own email shape** (`writer.email_rules`). Point it at a markdown file
   (`skills/email_rules.md` is gitignored) and its rules replace the Writer's
   built-in shape, which ends every prompt and so beat anything in the skills:

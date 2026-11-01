@@ -89,6 +89,7 @@ INSTANTLY_API_KEY=
 REOON_API_KEY=              # 600 free/mo — best free tier
 ZEROBOUNCE_API_KEY=         # 100 free/mo — best for M365/Workspace catch-alls
 HUNTER_API_KEY=             # 50 free/mo + pattern lookup
+TREG_TOKEN=                 # optional, paid per answer: finds + verifies what the free path can't
 
 # --- Discovery (optional — the free OpenStreetMap source needs no key) ---
 TINYFISH_API_KEY=                         # free web search (30/min, 500/hr); no rank signals
@@ -293,7 +294,8 @@ Users will come back with questions and tasks. Common ones:
 - **"I want to change what Harvey says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
 - **"Train Harvey on a different product"** → `harvey train <new-url>`
 - **"How do I see the database?"** → It's at `data/harvey.db`. They can open it with any SQLite tool, or ask you to query it.
-- **"I just want the prospect list"** → `harvey export` writes a sequencer-ready CSV (verified/risky emails only; `--all` for everything). Also available as Export buttons on the dashboard's Contacts tab. Harvey is valuable purely as a list-builder even if the user never lets it send.
+- **"I just want the prospect list"** → `harvey export` writes a sequencer-ready CSV (verified/risky emails only; `--all` for everything). Also available as Export buttons on the dashboard's Contacts tab. Harvey is valuable purely as a list-builder even if the user never lets it send. `harvey export --drafts` adds each person's drafted emails; with `channels.email.enabled: false` Harvey prospects and drafts but never sends.
+- **"Harvey can't find the email" / "use treg"** → set `TREG_TOKEN` in `.env` (README, "4. VERIFY"). Spend is capped by `TREG_MAX_COST_PER_LOOKUP` and `TREG_MONTHLY_BUDGET`; don't raise them without the user saying so.
 
 ---
 

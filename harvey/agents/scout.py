@@ -1723,7 +1723,7 @@ Respond ONLY with the JSON array."""
         if not email:
             return None
         try:
-            status = await verify_published_address(email, env=self.env)
+            status = await verify_published_address(email, env=self.env, state=getattr(self, "state", None))
         except Exception as e:
             logger.debug(f"Inbox verification failed for {email}: {e}")
             status = "guess"
