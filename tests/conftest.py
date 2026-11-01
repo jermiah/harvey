@@ -50,3 +50,12 @@ import harvey.humanize  # noqa: E402
 def _no_installed_humanizer(monkeypatch, tmp_path):
     """Tests never pick up the operator's real ~/.claude Humanizer skill."""
     monkeypatch.setattr(harvey.humanize, "SKILL_PATH", tmp_path / "no-humanizer.md")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_treg(monkeypatch):
+    """Tests never spend from a real treg balance: no token unless a test
+    sets one, and then only against a fake transport."""
+    for name in ("TREG_TOKEN", "TREG_CUSTOMER", "TREG_SEAT", "TREG_ORG_ID",
+                 "TREG_MAX_COST_PER_LOOKUP", "TREG_MONTHLY_BUDGET"):
+        monkeypatch.delenv(name, raising=False)

@@ -81,6 +81,7 @@ async def collect_prospects(
     out = []
     for r in rows:
         out.append({
+            "id": r.get("id", ""),
             "email": r.get("email", ""),
             "first_name": r.get("first_name", ""),
             "last_name": r.get("last_name", ""),
@@ -152,3 +153,56 @@ async def export_prospects_csv(
             f.write(text)
         logger.info(f"Exported {len(rows)} prospects to {out_path}")
     return len(rows), text
+
+
+DRAFT_COLUMNS = [
+    "email", "first_name", "last_name", "company_name", "title", "website",
+    "email_status", "score", "personalization",
+    "subject_1", "body_1", "subject_2", "body_2", "subject_3", "body_3",
+]
+
+
+async def export_drafts_csv(state: StateManager, out_path: str, config=None) -> int:
+    """Every deliverable prospect with a written sequence, one row each,
+    with the emails filled in — for sending by hand or from another tool.
+
+    Email 1 is the per-prospect draft the Writer staged in the outbox when
+    there is one; otherwise, and for emails 2-3, the campaign template. The
+    same people are left out as in the prospect export (opt-outs,
+    do_not_contact, unverified addresses). Returns the row count.
+    """
+    import aiosqlite
+    from harvey.agents.sender import render_merge_vars
+
+    allowed = {r["id"]: r for r in await collect_prospects(state, config=config)}
+
+    async with aiosqlite.connect(state.db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT campaign_id, prospect_id, step, subject, body FROM outbox "
+            "WHERE kind = 'sequence'"
+        ) as cursor:
+            staged = {(r["campaign_id"], r["prospect_id"], r["step"]): r
+                      for r in await cursor.fetchall()}
+
+    rows = []
+    for campaign in await state.get_campaigns_by_status("draft"):
+        for prospect_id in campaign.prospect_ids:
+            listed = allowed.get(prospect_id)
+            prospect = await state.get_prospect(prospect_id) if listed else None
+            if not prospect:
+                continue
+            row = {key: listed.get(key, "") for key in DRAFT_COLUMNS}
+            for step in campaign.sequence[:3]:
+                own = staged.get((campaign.id, prospect_id, step.step))
+                subject, body = (own["subject"], own["body"]) if own else (step.subject, step.body)
+                row[f"subject_{step.step}"] = render_merge_vars(subject, prospect)
+                row[f"body_{step.step}"] = render_merge_vars(body, prospect)
+            rows.append(row)
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=DRAFT_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    logger.info(f"Exported {len(rows)} drafted prospects to {out_path}")
+    return len(rows)

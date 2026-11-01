@@ -32,6 +32,8 @@ import dns.resolver
 import aiosmtplib
 import httpx
 
+from harvey.integrations import treg
+
 logger = logging.getLogger("harvey.email_finder")
 
 # Cache MX host + type per domain to avoid repeated lookups.
@@ -640,11 +642,15 @@ def _status_from_verdict(verdict: dict) -> Optional[str]:
     return None  # unknown / risky-unknown — inconclusive
 
 
-async def _verify_candidate(email: str, mx_type: str, env) -> tuple[Optional[str], bool]:
+async def _verify_candidate(
+    email: str, mx_type: str, env, state=None,
+) -> tuple[Optional[str], bool]:
     """Run the best available verifier for this domain type.
 
     Returns (status_or_None, catch_all_seen). Order is chosen so scarce
     paid-ish credits are spent only where they actually resolve the domain.
+    treg (pay per answer, capped by TREG_MONTHLY_BUDGET) comes last, and
+    only with a state store to count its spend.
     """
     reoon_key = getattr(env, "reoon_api_key", "") if env else ""
     zerobounce_key = getattr(env, "zerobounce_api_key", "") if env else ""
@@ -662,6 +668,8 @@ async def _verify_candidate(email: str, mx_type: str, env) -> tuple[Optional[str
             channels.append(lambda: verify_reoon(email, reoon_key))
         if hunter_key:
             channels.append(lambda: verify_hunter(email, hunter_key))
+        if treg.treg_token():
+            channels.append(lambda: treg.treg_verify(email, state))
         for channel in channels:
             verdict = await channel()
             if verdict is None:
@@ -701,10 +709,19 @@ async def _verify_candidate(email: str, mx_type: str, env) -> tuple[Optional[str
             if status is not None:
                 return status, catch_all_seen
 
+    if treg.treg_token():
+        verdict = await treg.treg_verify(email, state)
+        if verdict:
+            if verdict.get("catch_all"):
+                catch_all_seen = True
+            status = _status_from_verdict(verdict)
+            if status is not None:
+                return status, catch_all_seen
+
     return None, catch_all_seen
 
 
-async def verify_published_address(email: str, env=None) -> str:
+async def verify_published_address(email: str, env=None, state=None) -> str:
     """Grade an address the company publishes on its own website.
 
     Graded like any other address: a catch-all verdict stays "risky", so
@@ -719,7 +736,7 @@ async def verify_published_address(email: str, env=None) -> str:
     mx_host = await get_mx_host(domain)
     if not mx_host:
         return "invalid"
-    status, _ = await _verify_candidate(email, classify_mx(mx_host), env)
+    status, _ = await _verify_candidate(email, classify_mx(mx_host), env, state)
     return status or "guess"
 
 
@@ -737,6 +754,29 @@ def _belongs_to_someone_else(candidate, pattern, person, domain, other_people, k
 
 
 # ── Top-level entry point ──
+
+async def _treg_lookup(
+    first_name: str, last_name: str, domain: str, mx_type: str, state,
+) -> Optional[EmailResult]:
+    """Ask treg for the person's address when the pattern pipeline couldn't
+    produce a sendable one. None when treg is off, over budget, or missed."""
+    if not await treg.treg_available(state):
+        return None
+    found = await treg.treg_find(first_name, last_name, domain, state)
+    if not found:
+        return None
+    email, verdict = found
+    status = _status_from_verdict(verdict) if verdict else None
+    if status == "invalid":
+        return None
+    status = status or "guess"
+    logger.info(f"Email for {first_name} {last_name}@{domain}: {email} [{status}, via treg]")
+    return EmailResult(
+        email=email, status=status,
+        pattern=infer_pattern_from_email(email, first_name, last_name) or "",
+        mx_type=mx_type,
+    )
+
 
 async def find_email(
     first_name: str,
@@ -789,6 +829,10 @@ async def find_email(
                                 other_people, known_emails):
         logger.info(f"Email for {first_name} {last_name}@{domain}: {candidate} could be "
                     "another named person's mailbox; not guessed")
+        if verify:
+            found = await _treg_lookup(first_name, last_name, domain, mx_type, state)
+            if found:
+                return found
         return EmailResult(email="", status="guess", pattern=pattern, mx_type=mx_type)
     if not candidate:
         candidate = build_email(DEFAULT_PATTERN, first_name, last_name, domain)
@@ -806,7 +850,7 @@ async def find_email(
     if not verify:
         return EmailResult(email=candidate, status="guess", pattern=pattern, mx_type=mx_type)
 
-    status, catch_all = await _verify_candidate(candidate, mx_type, env)
+    status, catch_all = await _verify_candidate(candidate, mx_type, env, state)
 
     if catch_all and state is not None:
         try:
@@ -817,6 +861,13 @@ async def find_email(
     if status is None:
         # Verification couldn't decide — an honest guess, never "verified".
         status = "guess"
+
+    if status in ("guess", "invalid"):
+        # The pattern's candidate isn't sendable: a name lookup may still
+        # find the real address (a different format, a nickname).
+        found = await _treg_lookup(first_name, last_name, domain, mx_type, state)
+        if found:
+            return found
 
     logger.info(f"Email for {first_name} {last_name}@{domain}: {candidate} [{status}]")
     return EmailResult(email=candidate, status=status, pattern=pattern, mx_type=mx_type)

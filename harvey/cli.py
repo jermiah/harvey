@@ -401,6 +401,17 @@ def cmd_export(args):
         state = StateManager()
         await state.init_db()
 
+        if args.drafts:
+            from harvey.export import export_drafts_csv
+            out = "drafts.csv" if args.out == "prospects.csv" else args.out
+            count = await export_drafts_csv(state, out)
+            print(f"\n  Exported {count} prospect(s) with their drafted emails to {out}")
+            if count == 0:
+                print("  Nothing drafted yet: the Writer drafts for verified/risky")
+                print("  addresses only. Let 'harvey run' work a while first.")
+            print()
+            return
+
         email_statuses = None
         if args.email_status:
             email_statuses = [s.strip() for s in args.email_status.split(",") if s.strip()]
@@ -428,6 +439,51 @@ def cmd_export(args):
             print("  The CSV imports directly into Instantly, Smartlead, or any sequencer.\n")
 
     asyncio.run(_export())
+
+
+def cmd_treg(args):
+    """treg: this month's spend against the caps, and the per-customer ledger."""
+    import os
+
+    from dotenv import load_dotenv
+    from harvey.paths import PROJECT_ROOT
+    from harvey.state import StateManager
+    from harvey.integrations import treg
+
+    load_dotenv(PROJECT_ROOT / ".env")
+
+    async def _show():
+        if not treg.treg_token():
+            print("\n  treg is off. Add TREG_TOKEN to .env to use it (README, '4. VERIFY').\n")
+            return
+        state = StateManager()
+        await state.init_db()
+        spent = await treg.treg_spent_this_month(state)
+        print("\n  treg")
+        print("  " + "=" * 40)
+        seat = treg.tag_value(os.getenv("TREG_SEAT", ""))
+        print(f"  Customer tag:    {treg.customer_tag()}" + (f"  (seat {seat})" if seat else ""))
+        print(f"  This month:      ${spent:.4f} of ${treg.monthly_budget():.2f}")
+        print(f"  Per lookup cap:  ${treg.max_cost_per_lookup():.4f}")
+        print(f"  Available now:   {'yes' if await treg.treg_available(state) else 'no (budget reached)'}")
+        if not os.getenv("TREG_ORG_ID", "").strip():
+            print("\n  Set TREG_ORG_ID in .env to see treg's ledger per customer and seat.\n")
+            return
+        for key in ("customer", "seat"):
+            try:
+                data = await treg.usage_by_tag(key, days=args.days)
+            except Exception as e:
+                print(f"\n  Ledger by {key}: unavailable ({e})")
+                continue
+            print(f"\n  Ledger by {key}, last {args.days} days (whole treg team)")
+            for row in data.get("rows", []):
+                print(f"    {row.get('value', ''):<28} ${row.get('charged_usd', 0):>9.4f}  "
+                      f"{row.get('calls', 0)} calls")
+            print(f"    {'(untagged)':<28} ${int(data.get('unattributed_micro', 0)) / 1e6:>9.4f}")
+            print(f"    {'total':<28} ${int(data.get('total_micro', 0)) / 1e6:>9.4f}")
+        print()
+
+    asyncio.run(_show())
 
 
 def cmd_gmail(args):
@@ -1022,6 +1078,8 @@ def main():
     sub.add_argument("--min-score", type=int, default=0, help="Minimum ICP score")
     sub.add_argument("--status", default="", help="Comma-separated pipeline statuses (e.g. new,queued); opted-out contacts stay excluded")
     sub.add_argument("--all", action="store_true", help="Export the raw list without filters, including opted-out contacts (not for outreach)")
+    sub.add_argument("--drafts", action="store_true",
+                     help="Export deliverable prospects with their drafted emails (default file: drafts.csv)")
     sub.set_defaults(func=cmd_export)
 
     # harvey gmail auth|test
@@ -1111,6 +1169,11 @@ def main():
                      help="connect a key, 'other' if you use another warmup service, "
                           "or show the status (default)")
     sub.set_defaults(func=cmd_trulyinbox)
+
+    # harvey treg
+    sub = subparsers.add_parser("treg", help="treg spend: this month vs the caps, and the per-customer ledger")
+    sub.add_argument("--days", type=int, default=30, help="Ledger window (default: 30)")
+    sub.set_defaults(func=cmd_treg)
 
     # harvey usage
     sub = subparsers.add_parser("usage", help="Show brain usage and quota (Claude or Codex)")

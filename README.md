@@ -349,7 +349,9 @@ Harvey learns each company's **address pattern** and verifies one candidate, rat
 
 Every address is tagged honestly: `verified` / `risky` (catch-all) / `guess` / `invalid`. **Only deliverable ones are ever sent to.** A guess is never treated as a win.
 
-> Harvey is worth running even if you never let it send. `harvey export` writes a sequencer-ready CSV of everything it found.
+**treg, when the free path can't settle it** (optional). Put a `TREG_TOKEN` from [treg](https://treg.to) in `.env` and Harvey uses two of its routed tools, after the free ones: `treg.people.email.verify` to grade the pattern's candidate when no other verifier could (fractions of a cent), then `treg.people.email.find` to look the person up by name and domain when the candidate was a guess or invalid, verifying the hit in the same call. A hit on another domain is discarded. Spend is capped per call (`TREG_MAX_COST_PER_LOOKUP`, default $0.05) and per calendar month (`TREG_MONTHLY_BUDGET`, default $10, counted from what treg reports each call cost); a call is made only while a full per-call cap still fits in the month. Each checkout counts its own spend. Every call is tagged (`X-Treg-Meta`) with the company the checkout prospects for (`TREG_CUSTOMER`, else `persona.company`), the teammate running it (`TREG_SEAT`) and the tool, so one treg team can run several Harvey copies and see who spent what: `harvey treg` shows the month against the caps and, with `TREG_ORG_ID` set, treg's ledger per customer and per seat. treg can also enforce a cap per customer on its side (`PUT /orgs/<id>/budgets/customer/<tag>`, see treg's integration guide).
+
+> Harvey is worth running even if you never let it send. `harvey export` writes a sequencer-ready CSV of everything it found, and `harvey export --drafts` adds each person's three drafted emails, filled in, for sending by hand. To use Harvey only this way, set `channels.email.enabled: false`: it keeps prospecting and drafting, and never sends or reads a mailbox.
 
 ---
 
