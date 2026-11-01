@@ -45,6 +45,7 @@ confirmed signals, searching contacts, and the same screen in dark mode:
 - [The dashboard](#the-dashboard)
 - [How the data is stored](#how-the-data-is-stored)
 - [Configuration](#configuration)
+- [Finding more emails with treg](#finding-more-emails-with-treg)
 - [Using a ChatGPT plan instead (Codex)](#using-a-chatgpt-plan-instead-codex)
 - [Legal and deliverability](#legal-and-deliverability)
 - [Troubleshooting](#troubleshooting)
@@ -638,6 +639,76 @@ raw-data export for inspection: it includes opted-out and unverified contacts
 and should not be imported as an outreach list. The dashboard's prospect CSV
 download follows the same policy; `?all=true` selects its raw export.
 
+
+## Finding more emails with treg
+
+Harvey's free email pipeline works well for small businesses, whose sites publish
+names and addresses. It struggles with larger companies, which rarely do. **treg**
+([treg.to](https://treg.to)) fills that gap: one API that reaches ~30 contact-data
+providers, cheapest first, billed only when it returns an answer. It's optional,
+and off until you add a token.
+
+### What you need
+
+treg is **not** part of your Claude or ChatGPT subscription. It has its own
+prepaid balance, and Harvey needs its own key — a treg connection in claude.ai or
+the treg Claude Code plugin is for you in chat, and Harvey can't use it.
+
+1. **A treg account** — sign in at [treg.to](https://treg.to).
+2. **A team API key** for Harvey: on the treg dashboard, or `treg org agent-new harvey`.
+   Use a team (org-scoped) key, not your personal `treg login`.
+3. **Some balance.** $5–10 is plenty to start; lookups cost from ~$0.0005 to ~$0.15
+   each, usually under $0.02.
+
+### Turn it on
+
+Add to `.env`:
+
+```
+TREG_TOKEN=<your team key>
+TREG_SEAT=<your name>            # who is running this copy, e.g. alex
+TREG_CUSTOMER=<company>          # optional: defaults to persona.company
+TREG_MAX_COST_PER_LOOKUP=0.05    # never pay more than this for one lookup
+TREG_MONTHLY_BUDGET=10           # stop using treg for the month past this
+TREG_ORG_ID=                     # optional: your treg team number, for `harvey treg`
+```
+
+Then run Harvey as usual (`harvey run`). Nothing else to set up.
+
+### How it works
+
+No AI decides when to use treg, and Claude/Codex never sees the key. Harvey's own
+code calls it during email finding, only when the free path couldn't confirm an
+address:
+
+```
+free: learn the company's email format → build one address → verify it
+  └─ couldn't verify?        → treg checks that address          (fractions of a cent)
+       └─ still a guess or bad? → treg looks the person up by name  (verified in the same call)
+```
+
+A treg hit at a different domain (usually a former employer) is thrown away.
+treg's answers are tagged `verified` / `risky` / `guess` like every other address,
+so only deliverable ones are drafted for or sent to.
+
+### Watching what it costs
+
+```bash
+harvey treg      # this month's spend vs your caps; with TREG_ORG_ID, treg's ledger per company and teammate
+```
+
+Every call is tagged with the company (`customer`), the teammate (`seat`) and the
+kind of lookup, so one treg team can run several Harvey copies — one per company,
+one per teammate — and still see who spent what. Each copy counts its own monthly
+budget. To have treg itself enforce a cap per company, see treg's
+[integration guide](https://treg.to/integrate.md) (budgets per tag).
+
+**Troubleshooting:** `harvey treg` says *off* → `TREG_TOKEN` is empty. The log
+says *out of balance* → top up at treg.to. *Token refused* → check the key, or mint
+a team key instead of a personal one. *Budget reached* → it resumes next month, or
+raise `TREG_MONTHLY_BUDGET`.
+
+---
 
 ## Using a ChatGPT plan instead (Codex)
 
